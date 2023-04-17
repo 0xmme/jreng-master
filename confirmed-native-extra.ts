@@ -123,10 +123,17 @@ export const runConfirmedNativeTokenExtraWorker = async (): Promise<void> => {
     return true;
   };
 
-  const getEtherScanTxListForAddress = async (address: string) => {
+  /**
+   * @param address address to fetch tx list for
+   * @param startBlock block to start loading from
+   * @dev added pagination to fetch max 1000 tx after order was made  */
+  const getEtherScanTxListForAddress = async (
+    address: string,
+    startBlock: number
+  ) => {
     const txList = await axios
       .get(
-        `https://api.etherscan.io/api?module=account&action=txlist&address=${address}&sort=desc&apikey=${etherscanApiKey}`
+        `https://api.etherscan.io/api?module=account&action=txlist&address=${address}&startblock=${startBlock}&sort=desc&page=1&offset=1000&apikey=${etherscanApiKey}`
       )
       .then(res => accountTxListResultSchema.parse(res));
 
@@ -160,11 +167,23 @@ export const runConfirmedNativeTokenExtraWorker = async (): Promise<void> => {
         return;
       }
 
+      /**
+       * get only transactions after order timestamp
+       * blockDiff is calculated by dividing the time between current block and order by the avg blocktime of 12-13 secs + a little buffer */
+      const currentBlock = await nodeProvider.getBlock("latest");
+      const blockDiff = Math.floor(
+        (currentBlock.timestamp - order.createdAt.getTime()) / 15
+      );
+      const scanStartBlock = currentBlock.number - blockDiff;
+
       let txs;
 
       try {
         // In descending order
-        txs = await getEtherScanTxListForAddress(order.depositAddress.address);
+        txs = await getEtherScanTxListForAddress(
+          order.depositAddress.address,
+          scanStartBlock
+        );
       } catch (error: any) {
         logger.error(error, 'Error fetching txs for order %s: %s', orderId, error.message);
 
@@ -190,23 +209,6 @@ export const runConfirmedNativeTokenExtraWorker = async (): Promise<void> => {
 
         if (!ethersTx.blockNumber) {
           logger.warn('Transaction %s has no block number', etherscanTx.hash);
-
-          return;
-        }
-
-        const block = await nodeProvider.getBlock(ethersTx.blockNumber);
-
-        const timestamp = new Date(block.timestamp * 1000);
-
-        // Only transactions that happened after the order was created
-        // This should handle deposit address re-assignment
-        if (timestamp.getTime() < order.createdAt.getTime()) {
-          logger.warn(
-            'Ignoring tx %s that happened before order %s was created',
-            etherscanTx.hash,
-            orderId
-          );
-
           return;
         }
 
